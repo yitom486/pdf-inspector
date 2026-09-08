@@ -1,0 +1,93 @@
+# Fork 发行：为含 spans 补丁的 napi 构建同名 tarball，供 Inkdown 经 URL 依赖消费。
+# 不改包名/版本号（避免动 version.py），上游合入后直接删本文件切回官方包。
+# 手动触发，产物附到指定 Release tag。
+
+name: Fork napi tarballs
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'GitHub Release tag for the tarballs'
+        required: true
+        default: inkdown-napi-v1.18.0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use_napi_cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+          targets: ${{ matrix.target }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install napi deps
+        working-directory: napi
+        run: bun install
+
+      - name: Build native addon
+        working-directory: napi
+        run: bunx napi build --platform --release --target ${{ matrix.target }} ${{ matrix.use_napi_cross && '--use-napi-cross' || '' }}
+
+      - name: Pack platform tarball
+        working-directory: napi
+        shell: bash
+        run: |
+          bunx napi create-npm-dirs
+          for dir in npm/*/; do
+            if ls "$dir"*.node >/dev/null 2>&1; then (cd "$dir" && npm pack); fi
+          done
+          npm pack
+
+      - name: Upload tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-tarballs-${{ matrix.target }}
+          path: napi/**/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attach tarballs to Release
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: napi-tarballs-*
+          merge-multiple: true
+
+      - name: Create Release if missing
+        run: gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Fork napi builds with positioned OCR spans (see firecrawl/pdf-inspector#514)."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload tarballs
+        run: gh release upload "$RELEASE_TAG" dist/*.tgz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
