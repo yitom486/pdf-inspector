@@ -51,26 +51,27 @@ jobs:
         working-directory: napi
         run: bunx napi build --platform --release --target ${{ matrix.target }} ${{ matrix.use_napi_cross && '--use-napi-cross' || '' }}
 
-      - name: Pack platform tarball
-        working-directory: napi
-        shell: bash
-        run: |
-          bunx napi create-npm-dirs
-          for dir in npm/*/; do
-            if ls "$dir"*.node >/dev/null 2>&1; then (cd "$dir" && npm pack); fi
-          done
-          npm pack
-
-      - name: Upload tarballs
+      - name: Upload native binary
         uses: actions/upload-artifact@v4
         with:
-          name: napi-tarballs-${{ matrix.target }}
-          path: napi/**/*.tgz
+          name: bindings-${{ matrix.target }}
+          path: napi/*.node
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload generated JS bindings
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-bindings
+          path: |
+            napi/index.js
+            napi/index.d.ts
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    name: Attach tarballs to Release
+    name: Pack tarballs to Release
     needs: build
     runs-on: ubuntu-latest
     env:
@@ -80,9 +81,50 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          path: dist
-          pattern: napi-tarballs-*
-          merge-multiple: true
+          path: artifacts
+
+      - name: Pack platform + main tarballs
+        working-directory: napi
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p dist-tgz
+          for node_file in ../artifacts/bindings-*/pdf-inspector.*.node; do
+            base=$(basename "$node_file")
+            suffix=${base#pdf-inspector.}
+            suffix=${suffix%.node}
+            pkg="@firecrawl/pdf-inspector-$suffix"
+            dir="npm-dist/$suffix"
+            mkdir -p "$dir"
+            cp "$node_file" "$dir/"
+            node -e '
+              const [suffix, version] = process.argv.slice(1)
+              const meta = {
+                "linux-x64-gnu":    { os: ["linux"],  cpu: ["x64"],   libc: ["glibc"] },
+                "darwin-arm64":     { os: ["darwin"], cpu: ["arm64"] },
+                "win32-x64-msvc":   { os: ["win32"],  cpu: ["x64"] },
+              }[suffix]
+              if (!meta) {
+                console.error(`unknown platform suffix: ${suffix}`)
+                process.exit(1)
+              }
+              const pkg = {
+                name: `@firecrawl/pdf-inspector-${suffix}`,
+                version,
+                description: `Prebuilt ${suffix} binary for @firecrawl/pdf-inspector (fork with OCR spans)`,
+                main: `pdf-inspector.${suffix}.node`,
+                files: [`pdf-inspector.${suffix}.node`],
+                license: "MIT",
+                engines: { node: ">= 10" },
+                ...meta,
+              }
+              require("fs").writeFileSync(`npm-dist/${suffix}/package.json`, JSON.stringify(pkg, null, 2) + "\n")
+            ' "$suffix" "$VERSION"
+            (cd "$dir" && npm pack --pack-destination ../../dist-tgz/)
+          done
+          cp ../artifacts/js-bindings/index.js ../artifacts/js-bindings/index.d.ts .
+          npm pack --pack-destination dist-tgz/
+          ls -la dist-tgz/
 
       - name: Create Release if missing
         run: gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Fork napi builds with positioned OCR spans (see firecrawl/pdf-inspector#514)."
@@ -90,6 +132,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Upload tarballs
-        run: gh release upload "$RELEASE_TAG" dist/*.tgz --clobber
+        run: gh release upload "$RELEASE_TAG" napi/dist-tgz/*.tgz --clobber
         env:
           GH_TOKEN: ${{ github.token }}
