@@ -2,7 +2,8 @@
 # 不改包名/版本号（避免动 version.py），上游合入后直接删本文件切回官方包。
 # 手动触发。默认 dry-run（publish_release=false）：只 build/smoke/pack，
 # 7 个 tgz 作为 Actions artifact 留存，不触碰 GitHub Release；
-# publish_release=true 时才由 release job 创建/上传 Release。
+# publish_release=true 时才由 release job 创建/上传 Release，且 release_tag
+# 必须精确等于本轮主包版本对应的 inkdown-napi-v<version>（防旧产物覆盖）。
 # 六平台矩阵与 musl 策略（zig + Alpine smoke）参照上游 publish.yml；
 # action 引用与上游对齐 pin 到 SHA，不用浮动 tag。
 
@@ -12,9 +13,8 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'GitHub Release tag for the tarballs'
+        description: 'GitHub Release tag for the tarballs (no default: an explicit tag is required so dry-run output can never overwrite a previous release)'
         required: true
-        default: inkdown-napi-v1.18.0
       publish_release:
         description: 'Actually create/upload the GitHub Release (false = dry-run only)'
         required: false
@@ -235,6 +235,29 @@ jobs:
         with:
           name: fork-tarballs
           path: dist-tgz
+
+      # Overwrite guard: the tag must exactly match the main tarball packed
+      # in THIS run (already smoke-passed). Anything else — a stale tag such
+      # as inkdown-napi-v1.18.0 or a dry-run placeholder — fails here, before
+      # any gh release command runs.
+      - name: Validate release tag against packed version
+        shell: bash
+        run: |
+          main_tgz=$(ls dist-tgz/*.tgz | grep -v -E '-(linux|darwin|win32)-')
+          if [ "$(echo "$main_tgz" | wc -l)" != "1" ]; then
+            echo "expected exactly one main tarball in dist-tgz, found:"
+            echo "$main_tgz"
+            exit 1
+          fi
+          tmpdir=$(mktemp -d)
+          tar -xzf "$main_tgz" -C "$tmpdir"
+          VERSION=$(node -p "require('$tmpdir/package/package.json').version")
+          EXPECTED="inkdown-napi-v$VERSION"
+          if [ "$RELEASE_TAG" != "$EXPECTED" ]; then
+            echo "Refusing to publish: release_tag ($RELEASE_TAG) != $EXPECTED derived from this run's packed main tarball ($VERSION)."
+            exit 1
+          fi
+          echo "Release tag OK: $RELEASE_TAG matches packed version $VERSION."
 
       - name: Create Release if missing
         run: gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Fork napi builds with positioned OCR spans and embedded outline (see firecrawl/pdf-inspector#514)."
