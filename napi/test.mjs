@@ -11,6 +11,7 @@ import {
   extractTextWithPositions,
   extractTextWithPositionsAndRotations,
   extractStructureElements,
+  extractEmbeddedOutline,
   extractTextInRegions,
   detectVectorGridInRegion,
   extractPagesMarkdown,
@@ -167,6 +168,45 @@ assert.ok(page1Elements.every(e => e.page === 1));
 // untagged PDFs yield an empty array
 assert.deepEqual(extractStructureElements(fixture), []);
 console.log('  extractStructureElements: OK');
+
+// --- extractEmbeddedOutline ---
+// a PDF without an outline is a normal empty success
+const noOutline = extractEmbeddedOutline(fixture);
+assert.deepEqual(noOutline.items, []);
+assert.equal(noOutline.unresolvedCount, 0);
+
+// a real fixture with bookmarks resolves titles, 1-based levels/pages
+const outlineFixture = readFileSync('../tests/fixtures/accessory_building_permit_prose_frame.pdf');
+const outlinePageCount = classifyPdf(outlineFixture).pageCount;
+const outline = extractEmbeddedOutline(outlineFixture);
+assert.ok(outline.items.length > 0, 'outline fixture should carry bookmarks');
+assert.equal(typeof outline.unresolvedCount, 'number');
+for (const entry of outline.items) {
+  assert.equal(typeof entry.title, 'string');
+  assert.ok(entry.title.length > 0, 'titles are never empty');
+  assert.equal(typeof entry.level, 'number');
+  assert.ok(entry.level >= 1, 'levels are 1-based');
+  // Rust None crosses the boundary as null (napi_get_null)
+  assert.ok(
+    entry.physicalPage === null || typeof entry.physicalPage === 'number',
+    `physicalPage must be a 1-based page or null, got ${entry.physicalPage}`,
+  );
+  if (entry.physicalPage !== null) {
+    assert.ok(
+      entry.physicalPage >= 1 && entry.physicalPage <= outlinePageCount,
+      `physicalPage ${entry.physicalPage} out of range`,
+    );
+  }
+}
+assert.equal(
+  outline.unresolvedCount,
+  outline.items.filter(e => e.physicalPage === null || e.physicalPage === undefined).length,
+  'unresolvedCount must match the entries without a page',
+);
+assert.ok(outline.items.some(e => e.level > 1), 'fixture should nest at least one level');
+
+// load failures reject through the standard error chain, never as empty
+assert.throws(() => extractEmbeddedOutline(Buffer.from('not a pdf')), /extract_embedded_outline/);
 
 // --- extractTextInRegions ---
 console.log('Testing extractTextInRegions...');

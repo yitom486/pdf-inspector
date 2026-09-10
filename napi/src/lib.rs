@@ -704,6 +704,52 @@ pub fn extract_structure_elements(
     })
 }
 
+/// Extract the PDF's embedded outline (bookmarks) as stable plain data.
+///
+/// Returns `{ items, unresolvedCount }` where each item carries a decoded
+/// `title`, a 1-based `level` (top-level entries are `1`), and a 1-based
+/// `physicalPage` that is `null` when the entry cannot be resolved to a
+/// page inside this document. A PDF without an outline is a normal
+/// success: `{ items: [], unresolvedCount: 0 }`.
+///
+/// Only destinations inside the current PDF are resolved (explicit
+/// destination arrays and named destinations). External / executable
+/// actions (`GoToR`, `URI`, `Launch`, `JavaScript`, etc.) are never followed
+/// and never exposed: such entries keep their safe title/level with
+/// `physicalPage: null` and are counted in `unresolvedCount`. Malformed
+/// outlines degrade deterministically under fixed node, depth, and
+/// cycle budgets instead of looping or throwing.
+///
+/// Load failures (not a PDF, encrypted, etc.) reject through the standard
+/// error chain — they are never reported as an empty outline.
+///
+/// Sync-only, like [`extractStructureElements`]: the walk is bounded
+/// (max 5000 entries) metadata work, not a full extraction.
+#[napi]
+pub fn extract_embedded_outline(buffer: Buffer) -> Result<EmbeddedOutline> {
+    let bytes: Vec<u8> = buffer.to_vec();
+    catch_panic("extract_embedded_outline", move || {
+        extract_embedded_outline_impl(&bytes)
+    })
+}
+
+fn extract_embedded_outline_impl(bytes: &[u8]) -> Result<EmbeddedOutline> {
+    let result = pdf_inspector::extract_embedded_outline_mem(bytes)
+        .map_err(|e| to_napi_err(e, "extract_embedded_outline"))?;
+    Ok(EmbeddedOutline {
+        items: result
+            .items
+            .into_iter()
+            .map(|item| EmbeddedOutlineItem {
+                title: item.title,
+                level: item.level,
+                physical_page: item.physical_page,
+            })
+            .collect(),
+        unresolved_count: result.unresolved_count,
+    })
+}
+
 /// Extract text within bounding-box regions from a PDF.
 ///
 /// For hybrid OCR: layout model detects regions in rendered images,
@@ -930,6 +976,31 @@ pub fn extract_tables_with_structure_cells(
 pub struct TableExtractionResultJs {
     pub markdown: String,
     pub fallback_reason: Option<String>,
+}
+
+/// One embedded-outline (bookmark) entry from a PDF's document outline.
+///
+/// Only stable plain data crosses the boundary: no object references,
+/// action dictionaries, URIs, JavaScript, file paths, or body text.
+#[napi(object)]
+pub struct EmbeddedOutlineItem {
+    /// Decoded, sanitized title (never empty; `"(untitled)"` fallback).
+    pub title: String,
+    /// 1-based nesting depth: top-level entries are `1`.
+    pub level: u32,
+    /// 1-based physical page, or absent (`null`) when the entry's
+    /// destination is missing, external (`GoToR`/`URI`/etc.), or otherwise
+    /// unresolvable inside this document.
+    pub physical_page: Option<u32>,
+}
+
+/// Bounded embedded-outline extraction result.
+#[napi(object)]
+pub struct EmbeddedOutline {
+    /// Entries in document order (pre-order depth-first traversal).
+    pub items: Vec<EmbeddedOutlineItem>,
+    /// Number of entries whose `physicalPage` is absent.
+    pub unresolved_count: u32,
 }
 
 /// Auto-fallback variant of [`extractTablesWithStructure`].
