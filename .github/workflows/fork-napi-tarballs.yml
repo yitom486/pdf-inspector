@@ -201,13 +201,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pdfium"
           gh release download "$rel" --repo "$repo" --pattern "$asset" --dir "$RUNNER_TEMP/pdfium" --clobber
           archive="$RUNNER_TEMP/pdfium/$asset"
-          # BSD tar on Windows parses a `D:...` archive operand as a remote
-          # host (`host:file`), so hand tar the msys absolute form. cygpath
-          # exists only on Windows runners; elsewhere this is a no-op.
-          tarball="$archive"
-          if command -v cygpath >/dev/null 2>&1; then
-            tarball=$(cygpath -u "$tarball")
-          fi
           python3 - "$archive" "$sha" <<'EOF'
           import hashlib, sys
           path, expected = sys.argv[1], sys.argv[2]
@@ -216,8 +209,19 @@ jobs:
               raise SystemExit(f"checksum mismatch for {path}: {actual} != {expected}")
           print(f"checksum OK: {path}")
           EOF
-          tar -xzf "$tarball" -C "$RUNNER_TEMP/pdfium"
-          lib=$(find "$RUNNER_TEMP/pdfium" -type f \( -name 'libpdfium.so' -o -name 'libpdfium.dylib' -o -name 'pdfium.dll' \) -print -quit)
+          # Extract with a relative path: an absolute Windows drive path is
+          # misparsed by some tar builds (`D:` looks like a remote host), and
+          # the shell builtin cd handles it. The recorded PDFIUM_LIB_PATH
+          # stays absolute so later steps (different cwd) keep working.
+          cd "$RUNNER_TEMP/pdfium"
+          tar -xzf "$asset"
+          lib=""
+          for candidate in bin/pdfium.dll lib/libpdfium.so lib/libpdfium.dylib; do
+            if [ -f "$candidate" ]; then
+              lib="$RUNNER_TEMP/pdfium/$candidate"
+              break
+            fi
+          done
           test -n "$lib"
           echo "PDFIUM_LIB_PATH=$lib" >> "$GITHUB_ENV"
 
