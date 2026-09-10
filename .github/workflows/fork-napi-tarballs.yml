@@ -151,9 +151,10 @@ jobs:
           path: napi
 
       # The raster smoke needs a real PDFium shared library: fetch the pinned
-      # firecrawl-pdfium build for this target (same release + checksums as
-      # CI's ocr-runtime job) and expose it through PDFIUM_LIB_PATH. musl
-      # jobs reuse the gnu archive; Alpine resolves it through gcompat below.
+      # build for this target and expose it through PDFIUM_LIB_PATH. gnu, mac
+      # and windows archives come from the firecrawl-pdfium release (same
+      # release + checksums as CI's ocr-runtime job); musl jobs use the
+      # official upstream musl archives, which have no glibc dependency.
       - name: Install pinned PDFium runtime
         shell: bash
         env:
@@ -161,25 +162,47 @@ jobs:
         run: |
           case "${{ matrix.target }}" in
             x86_64-pc-windows-msvc)
+              repo=firecrawl/pdfium-rs
+              rel=native-v7988
               asset=firecrawl-pdfium-win-x64.tgz
               sha=6f398552d8021a89078f64466557251a204999177287b876be49877eb8750d50
               ;;
             aarch64-apple-darwin)
+              repo=firecrawl/pdfium-rs
+              rel=native-v7988
               asset=firecrawl-pdfium-mac-arm64.tgz
               sha=4168356c2e62ad5e79553e2e9162f5c99949759d90cb83876a50311f0c32b9b3
               ;;
-            x86_64-unknown-linux-gnu|x86_64-unknown-linux-musl)
+            x86_64-unknown-linux-gnu)
+              repo=firecrawl/pdfium-rs
+              rel=native-v7988
               asset=firecrawl-pdfium-linux-x64.tgz
               sha=6248189e07bbc33cdeb31976c539a88614307c8a19f3276dbd018efbe5b4a2a2
               ;;
-            aarch64-unknown-linux-gnu|aarch64-unknown-linux-musl)
+            aarch64-unknown-linux-gnu)
+              repo=firecrawl/pdfium-rs
+              rel=native-v7988
               asset=firecrawl-pdfium-linux-arm64.tgz
               sha=fb67e132abf9a816194bb40cbe1c9e1f6e3bfcaa0b0ef645bf2e6b9f155c8a73
               ;;
+            x86_64-unknown-linux-musl)
+              repo=bblanchon/pdfium-binaries
+              rel=chromium/7988
+              asset=pdfium-linux-musl-x64.tgz
+              sha=867aa6924b12e2b9cebc824c2c07ac9c83be30d47cf02cf4689be5eb3ae10555
+              ;;
+            aarch64-unknown-linux-musl)
+              repo=bblanchon/pdfium-binaries
+              rel=chromium/7988
+              asset=pdfium-linux-musl-arm64.tgz
+              sha=bf8b049af5e56b492c5cca8f52451682ed6a024e6e55e5a5e981ed64459d05d1
+              ;;
           esac
           mkdir -p "$RUNNER_TEMP/pdfium"
-          gh release download native-v7988 --repo firecrawl/pdfium-rs --pattern "$asset" --dir "$RUNNER_TEMP/pdfium" --clobber
+          gh release download "$rel" --repo "$repo" --pattern "$asset" --dir "$RUNNER_TEMP/pdfium" --clobber
           archive="$RUNNER_TEMP/pdfium/$asset"
+          # BSD tar on Windows parses `D:...` as a remote host: normalize once.
+          archive="${archive//\\//}"
           python3 - "$archive" "$sha" <<'EOF'
           import hashlib, sys
           path, expected = sys.argv[1], sys.argv[2]
@@ -193,10 +216,10 @@ jobs:
           test -n "$lib"
           echo "PDFIUM_LIB_PATH=$lib" >> "$GITHUB_ENV"
 
-      # musl 产物必须在真实 musl libc 下加载，故进 Alpine 跑；PDFium 库由宿主挂载并经 PDFIUM_LIB_PATH 传入，glibc 链接部分由 gcompat 解析。
+      # musl 产物必须在真实 musl libc 下加载，故进 Alpine 跑；musl 版 PDFium 库由宿主挂载并经 PDFIUM_LIB_PATH 传入。
       - name: Run smoke test (Alpine)
         if: contains(matrix.target, 'musl')
-        run: docker run --rm -v "$PWD:/repo" -v "$RUNNER_TEMP/pdfium:/pdfium:ro" -w /repo/napi node:24-alpine sh -c 'apk add --no-cache gcompat libstdc++ && export PDFIUM_LIB_PATH=$(find /pdfium -type f -name "libpdfium.so" | head -n 1) && test -n "$PDFIUM_LIB_PATH" && node test.mjs && node test-outline.mjs && node test-render-pages.mjs'
+        run: docker run --rm -v "$PWD:/repo" -v "$RUNNER_TEMP/pdfium:/pdfium:ro" -w /repo/napi node:24-alpine sh -c 'export PDFIUM_LIB_PATH=$(find /pdfium -type f -name "libpdfium.so" | head -n 1) && test -n "$PDFIUM_LIB_PATH" && node test.mjs && node test-outline.mjs && node test-render-pages.mjs'
 
       - name: Run smoke test
         if: ${{ !contains(matrix.target, 'musl') }}
