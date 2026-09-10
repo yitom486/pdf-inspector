@@ -36,6 +36,7 @@ pub mod detector;
 pub mod extractor;
 pub mod glyph_names;
 pub mod markdown;
+pub mod outline;
 pub mod process_mode;
 pub mod structure_tree;
 pub mod tables;
@@ -59,6 +60,9 @@ pub use extractor::{
 pub use markdown::{
     to_markdown, to_markdown_from_items, to_markdown_from_items_with_rects,
     to_markdown_from_items_with_rects_and_page_count, MarkdownOptions, MarkdownProfile,
+};
+pub use outline::{
+    extract_embedded_outline, extract_embedded_outline_mem, OutlineItem, OutlineResult,
 };
 pub use process_mode::ProcessMode;
 pub use types::{LayoutComplexity, PdfLine, PdfRect, TextItem};
