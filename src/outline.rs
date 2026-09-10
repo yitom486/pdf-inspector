@@ -16,7 +16,7 @@
 //!   1-based (top-level entries are `1`, matching `lopdf`'s `TocType::level`)
 //!   and `physical_page` is the 1-based physical page, or `None` when the
 //!   entry cannot be resolved to a page in this document.
-//! * [`OutlineResult`] — `{ items, unresolved_count }`.
+//! * [`OutlineResult`] — `{ items, unresolved_count, truncated }`.
 //!
 //! # Semantics
 //!
@@ -36,17 +36,23 @@
 //!   strings as UTF-16BE / UTF-16LE. Anything else falls back to
 //!   [`FALLBACK_TITLE`]; control characters are stripped and over-long
 //!   titles are truncated to [`MAX_TITLE_BYTES`] bytes.
-//! * Nothing but title text, levels, page numbers, and the unresolved count
-//!   ever leaves this module: no object references, action dictionaries,
-//!   URIs, JavaScript, file paths, or document body text.
+//! * Nothing but title text, levels, page numbers, the unresolved count,
+//!   and the truncation flag ever leaves this module: no object references,
+//!   action dictionaries, URIs, JavaScript, file paths, or document body
+//!   text.
 //!
 //! # Resource bounds (deterministic degradation)
 //!
 //! * [`MAX_OUTLINE_NODES`] entries are emitted at most; traversal stops
-//!   afterwards in document order (pre-order DFS).
-//! * Nesting deeper than [`MAX_OUTLINE_DEPTH`] is not descended into.
+//!   afterwards in document order (pre-order DFS) and `truncated` is set.
+//! * Nesting deeper than [`MAX_OUTLINE_DEPTH`] is not descended into; any
+//!   skipped subtree sets `truncated`. When `truncated` is `true` callers
+//!   must not treat the result as the complete outline.
 //! * Revisited outline dictionaries (cyclic `/Next` / `/First` links) are
 //!   skipped via a visited-set, so malformed outlines always terminate.
+//!   Cycle skips alone never set `truncated`, nor do missing/external/
+//!   otherwise unresolvable destinations (those only count toward
+//!   `unresolved_count`).
 //! * Reference indirections are capped ([`MAX_REF_HOPS`]) and the named
 //!   destination table is capped ([`MAX_NAMED_DESTS`]).
 
@@ -90,7 +96,16 @@ pub struct OutlineResult {
     /// Entries in document order (pre-order depth-first traversal).
     pub items: Vec<OutlineItem>,
     /// Number of entries with `physical_page == None`.
+    ///
+    /// Missing, dangling, external (`GoToR` / `URI` / …), or otherwise
+    /// unresolvable destinations only ever count here; they never set
+    /// `truncated`.
     pub unresolved_count: u32,
+    /// `true` when the node budget ([`MAX_OUTLINE_NODES`]) or the depth
+    /// budget ([`MAX_OUTLINE_DEPTH`]) caused any subtree or later sibling
+    /// to be skipped. A truncated result must not be treated as the
+    /// complete outline.
+    pub truncated: bool,
 }
 
 /// Extract the embedded outline from a PDF in memory.
@@ -141,6 +156,7 @@ pub(crate) fn extract_with_limits(
     OutlineResult {
         items: walker.items,
         unresolved_count: walker.unresolved_count,
+        truncated: walker.truncated,
     }
 }
 
@@ -187,6 +203,10 @@ impl Walker<'_> {
                     let first_child = first_child.clone();
                     self.walk_siblings(&first_child, level + 1);
                 }
+            } else if dict.get(b"First").is_ok() {
+                // A child subtree exists but the depth budget forbids
+                // descending into it: the result is incomplete.
+                self.truncated = true;
             }
             current = dict
                 .get(b"Next")
@@ -564,6 +584,7 @@ mod tests {
             OutlineResult {
                 items: Vec::new(),
                 unresolved_count: 0,
+                truncated: false,
             }
         );
     }
@@ -581,6 +602,7 @@ mod tests {
         let result = extract_embedded_outline(&doc);
         assert!(result.items.is_empty());
         assert_eq!(result.unresolved_count, 0);
+        assert!(!result.truncated);
     }
 
     // -- B: multi-level outline with direct destinations -------------------
@@ -644,6 +666,7 @@ mod tests {
             ]
         );
         assert_eq!(result.unresolved_count, 0);
+        assert!(!result.truncated);
     }
 
     #[test]
@@ -666,6 +689,7 @@ mod tests {
         assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].physical_page, Some(1));
         assert_eq!(result.unresolved_count, 0);
+        assert!(!result.truncated);
     }
 
     // -- C: named destinations ---------------------------------------------
@@ -722,6 +746,7 @@ mod tests {
         assert_eq!(result.items[1].title, "Via GoTo named");
         assert_eq!(result.items[1].physical_page, Some(3));
         assert_eq!(result.unresolved_count, 0);
+        assert!(!result.truncated);
     }
 
     // -- D: broken targets degrade without panic ----------------------------
@@ -776,6 +801,10 @@ mod tests {
         assert!(result.items.iter().all(|item| item.physical_page.is_none()));
         assert_eq!(result.items[1].title, FALLBACK_TITLE);
         assert_eq!(result.unresolved_count, 5);
+        assert!(
+            !result.truncated,
+            "broken destinations degrade to unresolved, never to truncated"
+        );
     }
 
     // -- E: external / executable actions are never followed ----------------
@@ -819,6 +848,10 @@ mod tests {
         assert_eq!(result.items[0].title, "Remote");
         assert_eq!(result.items[0].physical_page, None);
         assert_eq!(result.unresolved_count, 1);
+        assert!(
+            !result.truncated,
+            "external actions degrade to unresolved, never to truncated"
+        );
     }
 
     #[test]
@@ -845,6 +878,7 @@ mod tests {
             assert_eq!(result.items.len(), 1, "kind: {kind:?}");
             assert_eq!(result.items[0].physical_page, None, "kind: {kind:?}");
             assert_eq!(result.unresolved_count, 1, "kind: {kind:?}");
+            assert!(!result.truncated, "kind: {kind:?}");
             let debug = format!("{:?}", result.items[0]);
             assert!(
                 !debug.contains("example.com")
@@ -882,6 +916,10 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.items[0].title, "One");
         assert_eq!(result.items[1].title, "Two");
+        assert!(
+            !result.truncated,
+            "cycle skips alone must not flag truncation"
+        );
     }
 
     fn chained_doc(depth: usize) -> Document {
@@ -909,6 +947,10 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.items[0].level, 1);
         assert_eq!(result.items[1].level, 2);
+        assert!(
+            result.truncated,
+            "a skipped child subtree must flag truncation"
+        );
     }
 
     #[test]
@@ -930,6 +972,18 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.items[0].title, "Item 0");
         assert_eq!(result.items[1].title, "Item 1");
+        assert!(
+            result.truncated,
+            "skipped later siblings must flag truncation"
+        );
+    }
+
+    #[test]
+    fn truncated_is_false_without_budget_pressure() {
+        let (doc, _) = multilevel_doc();
+        let result = extract_embedded_outline(&doc);
+        assert!(!result.truncated);
+        assert_eq!(result.unresolved_count, 0);
     }
 
     // -- Title decoding ------------------------------------------------------

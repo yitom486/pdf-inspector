@@ -706,19 +706,21 @@ pub fn extract_structure_elements(
 
 /// Extract the PDF's embedded outline (bookmarks) as stable plain data.
 ///
-/// Returns `{ items, unresolvedCount }` where each item carries a decoded
-/// `title`, a 1-based `level` (top-level entries are `1`), and a 1-based
-/// `physicalPage` that is `null` when the entry cannot be resolved to a
-/// page inside this document. A PDF without an outline is a normal
-/// success: `{ items: [], unresolvedCount: 0 }`.
+/// Returns `{ items, unresolvedCount, truncated }` where each item carries
+/// a decoded `title`, a 1-based `level` (top-level entries are `1`), and a
+/// 1-based `physicalPage` that is `null` when the entry cannot be resolved
+/// to a page inside this document. A PDF without an outline is a normal
+/// success: `{ items: [], unresolvedCount: 0, truncated: false }`.
 ///
 /// Only destinations inside the current PDF are resolved (explicit
 /// destination arrays and named destinations). External / executable
 /// actions (`GoToR`, `URI`, `Launch`, `JavaScript`, etc.) are never followed
 /// and never exposed: such entries keep their safe title/level with
-/// `physicalPage: null` and are counted in `unresolvedCount`. Malformed
-/// outlines degrade deterministically under fixed node, depth, and
-/// cycle budgets instead of looping or throwing.
+/// `physicalPage: null` and are counted in `unresolvedCount`, never in
+/// `truncated`. Malformed outlines degrade deterministically under fixed
+/// node, depth, and cycle budgets instead of looping or throwing: skipped
+/// subtrees or siblings set `truncated`, and a truncated result must not be
+/// treated as the complete outline.
 ///
 /// Load failures (not a PDF, encrypted, etc.) reject through the standard
 /// error chain — they are never reported as an empty outline.
@@ -747,6 +749,7 @@ fn extract_embedded_outline_impl(bytes: &[u8]) -> Result<EmbeddedOutline> {
             })
             .collect(),
         unresolved_count: result.unresolved_count,
+        truncated: result.truncated,
     })
 }
 
@@ -1000,7 +1003,14 @@ pub struct EmbeddedOutline {
     /// Entries in document order (pre-order depth-first traversal).
     pub items: Vec<EmbeddedOutlineItem>,
     /// Number of entries whose `physicalPage` is absent.
+    ///
+    /// Missing, external, or otherwise unresolvable destinations only ever
+    /// count here; they never set `truncated`.
     pub unresolved_count: u32,
+    /// `true` when the node or depth budget skipped any subtree or later
+    /// sibling. A truncated result must not be treated as the complete
+    /// outline.
+    pub truncated: bool,
 }
 
 /// Auto-fallback variant of [`extractTablesWithStructure`].

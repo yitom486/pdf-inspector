@@ -174,6 +174,7 @@ console.log('  extractStructureElements: OK');
 const noOutline = extractEmbeddedOutline(fixture);
 assert.deepEqual(noOutline.items, []);
 assert.equal(noOutline.unresolvedCount, 0);
+assert.equal(noOutline.truncated, false);
 
 // a real fixture with bookmarks resolves titles, 1-based levels/pages
 const outlineFixture = readFileSync('../tests/fixtures/accessory_building_permit_prose_frame.pdf');
@@ -181,6 +182,7 @@ const outlinePageCount = classifyPdf(outlineFixture).pageCount;
 const outline = extractEmbeddedOutline(outlineFixture);
 assert.ok(outline.items.length > 0, 'outline fixture should carry bookmarks');
 assert.equal(typeof outline.unresolvedCount, 'number');
+assert.equal(typeof outline.truncated, 'boolean');
 for (const entry of outline.items) {
   assert.equal(typeof entry.title, 'string');
   assert.ok(entry.title.length > 0, 'titles are never empty');

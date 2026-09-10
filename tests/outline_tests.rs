@@ -96,6 +96,7 @@ fn mem_roundtrip_resolves_direct_and_named_destinations() {
     assert_eq!(result.items[1].title, "Second (named)");
     assert_eq!(result.items[1].physical_page, Some(2));
     assert_eq!(result.unresolved_count, 0);
+    assert!(!result.truncated);
 }
 
 #[test]
@@ -104,6 +105,62 @@ fn real_fixture_without_outline_is_empty_success() {
     let result = extract_embedded_outline_mem(&bytes).unwrap();
     assert!(result.items.is_empty());
     assert_eq!(result.unresolved_count, 0);
+    assert!(!result.truncated);
+}
+
+#[test]
+fn deep_chain_through_mem_path_flags_truncation() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let page_id = doc.new_object_id();
+    doc.objects.insert(
+        page_id,
+        dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        }
+        .into(),
+    );
+    doc.objects.insert(
+        pages_id,
+        dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => Object::Integer(1),
+        }
+        .into(),
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+    let direct = |page: ObjectId| {
+        Object::Array(vec![Object::Reference(page), Object::Name(b"Fit".to_vec())])
+    };
+    let mut child: Option<ObjectId> = None;
+    for i in (0..40).rev() {
+        let mut dict = lopdf::Dictionary::new();
+        dict.set(b"Title", Object::string_literal(format!("Level {i}")));
+        dict.set(b"Dest", direct(page_id));
+        if let Some(child) = child {
+            dict.set(b"First", Object::Reference(child));
+        }
+        child = Some(doc.add_object(Object::Dictionary(dict)));
+    }
+    let outlines_id = doc.add_object(dictionary! {
+        "First" => child.unwrap(),
+        "Count" => Object::Integer(1),
+    });
+    doc.get_dictionary_mut(catalog_id)
+        .unwrap()
+        .set(b"Outlines", Object::Reference(outlines_id));
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+    let result = extract_embedded_outline_mem(&bytes).unwrap();
+    assert_eq!(result.items.len(), 32);
+    assert!(result.truncated);
 }
 
 #[test]
