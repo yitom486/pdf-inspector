@@ -30,6 +30,9 @@ mod routing;
 #[cfg(all(feature = "render-pdfium", not(target_arch = "wasm32")))]
 mod pdfium;
 
+#[cfg(all(feature = "render-pdfium", not(target_arch = "wasm32")))]
+mod raster;
+
 #[cfg(all(feature = "vision", not(target_arch = "wasm32")))]
 pub use contracts::{
     ImagePoint, ImageQuad, ModelDownloadPolicy, ModelIdentity, OcrEngine, OcrMode, OcrOptions,
@@ -65,3 +68,9 @@ pub use routing::{
 
 #[cfg(all(feature = "render-pdfium", not(target_arch = "wasm32")))]
 pub use pdfium::{PdfiumRenderer, RenderError};
+
+#[cfg(all(feature = "render-pdfium", not(target_arch = "wasm32")))]
+pub use raster::{
+    render_pages_png, RasterError, RasteredPage, RASTER_DEFAULT_DPI, RASTER_MAX_DPI,
+    RASTER_MAX_PAGES, RASTER_MAX_PIXELS_PER_PAGE, RASTER_MAX_TOTAL_BYTES,
+};

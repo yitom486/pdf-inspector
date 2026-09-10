@@ -153,12 +153,12 @@ jobs:
       # musl 产物必须在真实 musl libc 下加载，故进 Alpine 跑。
       - name: Run smoke test (Alpine)
         if: contains(matrix.target, 'musl')
-        run: docker run --rm -v "$PWD:/repo" -w /repo/napi node:24-alpine node test.mjs && docker run --rm -v "$PWD:/repo" -w /repo/napi node:24-alpine node test-outline.mjs
+        run: docker run --rm -v "$PWD:/repo" -w /repo/napi node:24-alpine node test.mjs && docker run --rm -v "$PWD:/repo" -w /repo/napi node:24-alpine node test-outline.mjs && docker run --rm -v "$PWD:/repo" -w /repo/napi node:24-alpine node test-render-pages.mjs
 
       - name: Run smoke test
         if: ${{ !contains(matrix.target, 'musl') }}
         working-directory: napi
-        run: node test.mjs && node test-outline.mjs
+        run: node test.mjs && node test-outline.mjs && node test-render-pages.mjs
 
   pack:
     name: Pack tarballs
