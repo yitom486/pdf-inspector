@@ -201,8 +201,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pdfium"
           gh release download "$rel" --repo "$repo" --pattern "$asset" --dir "$RUNNER_TEMP/pdfium" --clobber
           archive="$RUNNER_TEMP/pdfium/$asset"
-          # BSD tar on Windows parses `D:...` as a remote host: normalize once.
-          archive="${archive//\\//}"
+          # BSD tar on Windows parses a `D:...` archive operand as a remote
+          # host (`host:file`), so hand tar the msys absolute form. cygpath
+          # exists only on Windows runners; elsewhere this is a no-op.
+          tarball="$archive"
+          if command -v cygpath >/dev/null 2>&1; then
+            tarball=$(cygpath -u "$tarball")
+          fi
           python3 - "$archive" "$sha" <<'EOF'
           import hashlib, sys
           path, expected = sys.argv[1], sys.argv[2]
@@ -211,7 +216,7 @@ jobs:
               raise SystemExit(f"checksum mismatch for {path}: {actual} != {expected}")
           print(f"checksum OK: {path}")
           EOF
-          tar -xzf "$archive" -C "$RUNNER_TEMP/pdfium"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/pdfium"
           lib=$(find "$RUNNER_TEMP/pdfium" -type f \( -name 'libpdfium.so' -o -name 'libpdfium.dylib' -o -name 'pdfium.dll' \) -print -quit)
           test -n "$lib"
           echo "PDFIUM_LIB_PATH=$lib" >> "$GITHUB_ENV"
