@@ -1,6 +1,7 @@
-# Fork 发行：为含 spans 补丁的 napi 构建同名 tarball，供 Inkdown 经 URL 依赖消费。
+# Fork 发行：为含 spans 补丁与 embedded outline 的 napi 构建同名 tarball，供 Inkdown 经 URL 依赖消费。
 # 不改包名/版本号（避免动 version.py），上游合入后直接删本文件切回官方包。
 # 手动触发，产物附到指定 Release tag。
+# 六平台矩阵与 musl 策略（zig + Alpine smoke）参照上游 publish.yml。
 
 name: Fork napi tarballs
 
@@ -29,7 +30,19 @@ jobs:
             target: aarch64-apple-darwin
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            use_napi_cross: true
+            build-flags: --use-napi-cross
+          # aarch64 gnu 用 napi-cross 在 x64 host 上交叉编译（同上游 publish.yml）。
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            build-flags: --use-napi-cross
+            cflags: -D__ARM_ARCH=8
+          # musl 目标经 cargo-zigbuild（napi -x）在 x64 host 上交叉编译。
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            build-flags: -x
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            build-flags: -x
     steps:
       - uses: actions/checkout@v4
 
@@ -43,13 +56,31 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install zig
+        if: contains(matrix.target, 'musl')
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.1
+
+      - name: Install cargo-zigbuild
+        if: contains(matrix.target, 'musl')
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tool: cargo-zigbuild
+
       - name: Install napi deps
         working-directory: napi
         run: bun install
 
       - name: Build native addon
         working-directory: napi
-        run: bunx napi build --platform --release --target ${{ matrix.target }} ${{ matrix.use_napi_cross && '--use-napi-cross' || '' }}
+        env:
+          # napi-cross 的旧 AArch64 GCC 在预处理 ring 汇编时缺少该预定义宏，
+          # 而 AArch64 按定义即 ARMv8（同上游 publish.yml）。
+          CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.cflags }}
+        run: bunx napi build --platform --release --target ${{ matrix.target }} ${{ matrix.build-flags }}
 
       - name: Upload native binary
         uses: actions/upload-artifact@v4
@@ -70,9 +101,54 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  smoke-test:
+    name: Smoke test ${{ matrix.target }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download native binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: napi
+
+      - name: Download generated JS bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: js-bindings
+          path: napi
+
+      # musl 产物必须在真实 musl libc 下加载，故进 Alpine 跑。
+      - name: Run smoke test (Alpine)
+        if: contains(matrix.target, 'musl')
+        run: docker run --rm -v "$PWD:/repo" -w /repo/napi node:24-alpine node test.mjs && docker run --rm -v "$PWD:/repo" -w /repo/napi node:24-alpine node test-outline.mjs
+
+      - name: Run smoke test
+        if: ${{ !contains(matrix.target, 'musl') }}
+        working-directory: napi
+        run: node test.mjs && node test-outline.mjs
+
   publish:
     name: Pack tarballs to Release
-    needs: build
+    needs: [build, smoke-test]
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
@@ -101,6 +177,9 @@ jobs:
               const [suffix, version] = process.argv.slice(1)
               const meta = {
                 "linux-x64-gnu":    { os: ["linux"],  cpu: ["x64"],   libc: ["glibc"] },
+                "linux-x64-musl":   { os: ["linux"],  cpu: ["x64"],   libc: ["musl"] },
+                "linux-arm64-gnu":  { os: ["linux"],  cpu: ["arm64"], libc: ["glibc"] },
+                "linux-arm64-musl": { os: ["linux"],  cpu: ["arm64"], libc: ["musl"] },
                 "darwin-arm64":     { os: ["darwin"], cpu: ["arm64"] },
                 "win32-x64-msvc":   { os: ["win32"],  cpu: ["x64"] },
               }[suffix]
@@ -111,7 +190,7 @@ jobs:
               const pkg = {
                 name: `@firecrawl/pdf-inspector-${suffix}`,
                 version,
-                description: `Prebuilt ${suffix} binary for @firecrawl/pdf-inspector (fork with OCR spans)`,
+                description: `Prebuilt ${suffix} binary for @firecrawl/pdf-inspector (fork with OCR spans + embedded outline)`,
                 main: `pdf-inspector.${suffix}.node`,
                 files: [`pdf-inspector.${suffix}.node`],
                 license: "MIT",
@@ -127,7 +206,7 @@ jobs:
           ls -la dist-tgz/
 
       - name: Create Release if missing
-        run: gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Fork napi builds with positioned OCR spans (see firecrawl/pdf-inspector#514)."
+        run: gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Fork napi builds with positioned OCR spans and embedded outline (see firecrawl/pdf-inspector#514)."
         env:
           GH_TOKEN: ${{ github.token }}
 
