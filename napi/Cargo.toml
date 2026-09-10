@@ -1,6 +1,6 @@
 [package]
 name = "pdf-inspector-napi"
-version = "1.18.1-inkdown.1"
+version = "1.18.2-inkdown.1"
 edition = "2021"
 
 [lib]
