@@ -62,7 +62,7 @@ pub use markdown::{
     to_markdown_from_items_with_rects_and_page_count, MarkdownOptions, MarkdownProfile,
 };
 pub use outline::{
-    OutlineItem, OutlineResult, extract_embedded_outline, extract_embedded_outline_mem,
+    extract_embedded_outline, extract_embedded_outline_mem, OutlineItem, OutlineResult,
 };
 pub use process_mode::ProcessMode;
 pub use types::{LayoutComplexity, PdfLine, PdfRect, TextItem};
