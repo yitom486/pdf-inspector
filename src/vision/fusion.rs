@@ -5,10 +5,13 @@ use std::time::Instant;
 
 use thiserror::Error;
 
-use crate::markdown::{
-    complete_table_markdown_from_items, to_markdown_from_items_with_rects_and_page_count,
-    MarkdownOptions,
-};
+use crate::markdown::{to_markdown_from_items_with_rects_and_page_count, MarkdownOptions};
+// `complete_table_markdown_from_items` lives behind the `ocr` feature; without
+// it the supplemental-regions path keeps native content (same observable
+// outcome as an empty table result below). This keeps `render-pdfium`-only
+// builds compiling without inference dependencies.
+#[cfg(feature = "ocr")]
+use crate::markdown::complete_table_markdown_from_items;
 use crate::text_quality::{detect_encoding_issues, is_cid_garbage, is_garbage_text};
 use crate::types::{ItemType, PdfRect, TextItem};
 use crate::PageMarkdown;
@@ -242,6 +245,30 @@ pub(crate) fn fuse_ocr_pages_adaptive(
     )
 }
 
+/// Table markdown for supplemental OCR regions.
+///
+/// With the `ocr` feature this runs the real table detector; without it there
+/// is no table model available, so the empty result keeps native content —
+/// the same observable outcome as "no valid table" below.
+#[cfg(feature = "ocr")]
+fn supplemental_table_markdown(
+    region_items: Vec<TextItem>,
+    options: &MarkdownOptions,
+    document_page_count: u32,
+) -> String {
+    complete_table_markdown_from_items(region_items, options.clone(), document_page_count)
+}
+
+/// See [`supplemental_table_markdown`].
+#[cfg(not(feature = "ocr"))]
+fn supplemental_table_markdown(
+    _region_items: Vec<TextItem>,
+    _options: &MarkdownOptions,
+    _document_page_count: u32,
+) -> String {
+    String::new()
+}
+
 fn full_page_routes(ocr_run: &OcrRun) -> BTreeMap<u32, OcrFusionRoute> {
     ocr_run
         .pages
@@ -330,9 +357,9 @@ fn fuse_ocr_pages_impl(
                 let ocr_markdown = match route {
                     OcrFusionRoute::SupplementalRegions(regions) => {
                         let region_items = items_inside_regions(ocr_items, regions);
-                        let table_markdown = complete_table_markdown_from_items(
+                        let table_markdown = supplemental_table_markdown(
                             region_items,
-                            options.markdown.clone(),
+                            &options.markdown,
                             document_page_count,
                         );
                         if table_markdown.is_empty() {
@@ -1246,6 +1273,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "ocr")]
     fn supplemental_image_ocr_fuses_a_table_inside_the_region() {
         let native = [native(0, "Native article text\n", false)];
         let mut spans = Vec::new();
@@ -1294,6 +1322,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "ocr")]
     fn supplemental_table_detection_requires_multiple_rows() {
         let items = vec![
             TextItem {

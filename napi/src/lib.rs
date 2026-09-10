@@ -753,6 +753,57 @@ fn extract_embedded_outline_impl(bytes: &[u8]) -> Result<EmbeddedOutline> {
     })
 }
 
+/// Options for {@link renderPdfPages}. Only resolution is configurable;
+/// pixel format is fixed to 8-bit RGB and all resource caps are enforced
+/// inside the native call.
+#[napi(object)]
+pub struct RenderPdfPagesOptions {
+    /// Output resolution in DPI. Defaults to 150 when omitted.
+    pub dpi: Option<f64>,
+}
+
+/// One rasterized PDF page returned by {@link renderPdfPages}.
+#[napi(object)]
+pub struct RenderedPagePng {
+    /// 1-based PDF page number, echoing the (deduplicated) request order.
+    pub page_number: u32,
+    /// PNG-encoded image bytes.
+    pub png: Buffer,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+}
+
+/// Render selected 1-indexed PDF pages to PNG images, in memory.
+///
+/// Bounded material for AI review: at most 8 pages per call, capped DPI
+/// (default 150), capped pixels per page and total PNG bytes. No OCR runs,
+/// no model is loaded, and no files are written. Duplicate page numbers are
+/// removed deterministically (first-occurrence order kept).
+#[napi]
+pub fn render_pdf_pages(
+    buffer: Buffer,
+    page_numbers: Vec<u32>,
+    options: Option<RenderPdfPagesOptions>,
+) -> Result<Vec<RenderedPagePng>> {
+    let bytes: Vec<u8> = buffer.to_vec();
+    let dpi = options.and_then(|selected| selected.dpi).map(|dpi| dpi as f32);
+    catch_panic("render_pdf_pages", move || {
+        let pages = pdf_inspector::vision::render_pages_png(&bytes, &page_numbers, dpi)
+            .map_err(|e| to_napi_err(e, "render_pdf_pages"))?;
+        Ok(pages
+            .into_iter()
+            .map(|page| RenderedPagePng {
+                page_number: page.page_number,
+                png: Buffer::from(page.png),
+                width: page.width,
+                height: page.height,
+            })
+            .collect())
+    })
+}
+
 /// Extract text within bounding-box regions from a PDF.
 ///
 /// For hybrid OCR: layout model detects regions in rendered images,
