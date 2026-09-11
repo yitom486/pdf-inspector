@@ -89,18 +89,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: blacksmith-8vcpu-ubuntu-2404
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - runner: blacksmith-8vcpu-ubuntu-2404
+          - runner: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             docker-options: -e CFLAGS_aarch64_unknown_linux_gnu=-D__ARM_ARCH=8
           # macos-13 was retired by GitHub; macos-15-intel is the remaining
           # Intel runner label (available through 2027).
           - runner: macos-15-intel
             target: x86_64-apple-darwin
-          - runner: blacksmith-6vcpu-macos-15
+          - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: blacksmith-8vcpu-windows-2025
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
