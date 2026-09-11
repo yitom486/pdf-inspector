@@ -31,12 +31,23 @@ jobs:
       - name: Check package version sync
         run: python3 scripts/version.py --check
 
-      - name: Refuse fork local versions on public PyPI
+      # Fork-local versions (+inkdown.N) can never be published to public
+      # PyPI, so stand the rest of the workflow down here with a loud message
+      # instead of failing: nothing to publish is a successful no-op, and a
+      # permanently red check on main would train everyone to ignore red.
+      - name: Check for fork local version
+        id: forklocal
         run: |
           NEW_VERSION=$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
-          python3 -c 'import sys; sys.path.insert(0, "scripts"); from version import require_pypi_publishable; require_pypi_publishable(sys.argv[1])' "$NEW_VERSION"
+          if python3 -c 'import sys; sys.path.insert(0, "scripts"); from version import require_pypi_publishable; require_pypi_publishable(sys.argv[1])' "$NEW_VERSION"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Standing down: fork-local version $NEW_VERSION is never published to public PyPI (by design, not an error)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check if version changed
+        if: steps.forklocal.outputs.skip != 'true'
         id: check
         run: |
           NEW_VERSION=$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
