@@ -251,6 +251,16 @@ jobs:
           export PDF_INSPECTOR_OCR_TEST_MODELS="$PDF_INSPECTOR_MODEL_CACHE/pp-ocrv6-small/oar-ocr-v0.7.0"
           cargo test --features ocr --test ocr_tests -- --nocapture
 
+      # Fork `-inkdown.N` versions are not valid PEP 440, and maturin derives
+      # the wheel version from Cargo.toml, so translate ONLY this ephemeral
+      # workspace copy for the smoke-only wheel build below (never committed,
+      # never published: public PyPI publish of `+inkdown.` versions is
+      # refused fail-closed in publish-pypi.yml).
+      - name: Translate fork version for Python wheel smoke build
+        shell: bash
+        run: |
+          python3 -c "import sys; sys.path.insert(0, 'scripts'); from version import write_cargo_wheel_version; print(write_cargo_wheel_version())"
+
       # The bindings use independent Cargo target directories. Build them at
       # the same time so this smoke job is bounded by the slower binding build
       # instead of paying for both release builds serially.

@@ -31,6 +31,11 @@ jobs:
       - name: Check package version sync
         run: python3 scripts/version.py --check
 
+      - name: Refuse fork local versions on public PyPI
+        run: |
+          NEW_VERSION=$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          python3 -c 'import sys; sys.path.insert(0, "scripts"); from version import require_pypi_publishable; require_pypi_publishable(sys.argv[1])' "$NEW_VERSION"
+
       - name: Check if version changed
         id: check
         run: |
