@@ -20,6 +20,16 @@ SEMVER = re.compile(
 )
 VERSION_LINE = re.compile(r'^(\s*version\s*=\s*")[^"]+(".*)$')
 SECTION_LINE = re.compile(r"^\s*\[([^]]+)]\s*$")
+
+# Fork release lines (`X.Y.Z-inkdown.N`, e.g. `1.18.2-inkdown.1`) are valid
+# SemVer for the Rust/npm artifacts but NOT valid PEP 440 for the Python
+# wheel, so the wheel ships the local-version mapping (`X.Y.Z+inkdown.N`).
+FORK_VERSION_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-inkdown\.([1-9]\d*|0)$"
+)
+FORK_WHEEL_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\+inkdown\.([1-9]\d*|0)$"
+)
 PLATFORM_PACKAGES = (
     "@firecrawl/pdf-inspector-linux-x64-gnu",
     "@firecrawl/pdf-inspector-linux-x64-musl",
@@ -124,6 +134,70 @@ def _write_lock_version(path: Path, package: str, version: str) -> None:
     raise ValueError(f"No version found for {package} in {path}")
 
 
+def is_fork_version(version: str) -> bool:
+    """True for fork release lines (`X.Y.Z-inkdown.N`)."""
+    return FORK_VERSION_RE.fullmatch(version) is not None
+
+
+def is_fork_wheel_version(version: str) -> bool:
+    """True for the PEP 440 wheel form (`X.Y.Z+inkdown.N`)."""
+    return FORK_WHEEL_RE.fullmatch(version) is not None
+
+
+def python_wheel_version(version: str) -> str:
+    """Map a fork release version to its PEP 440 wheel version.
+
+    `maturin` derives the wheel version from Cargo.toml and rejects SemVer
+    prereleases, so the Python package ships `X.Y.Z+inkdown.N` while every
+    other artifact keeps `X.Y.Z-inkdown.N`. Anything that is not exactly a
+    fork version is rejected: callers must not guess mappings for other
+    prerelease shapes.
+    """
+    match = FORK_VERSION_RE.fullmatch(version)
+    if match is None:
+        raise ValueError(f"Not a fork '-inkdown.N' version: {version}")
+    major, minor, patch, build = match.groups()
+    return f"{major}.{minor}.{patch}+inkdown.{build}"
+
+
+def require_pypi_publishable(version: str) -> str:
+    """Fail closed for fork-local wheel versions on public PyPI.
+
+    Local versions (`+inkdown.N`) cannot be uploaded to the public index,
+    so refuse explicitly instead of letting a publish job fail obscurely
+    (or, worse, look successful). Returns the version unchanged otherwise.
+    """
+    if is_fork_wheel_version(version):
+        raise ValueError(
+            f"Refusing to publish fork-local version {version} to public PyPI: "
+            "local versions (+inkdown.N) cannot be uploaded; "
+            "publish from a non-fork release line instead."
+        )
+    return version
+
+
+def _want_version(label: str, version: str) -> str:
+    """The version a manifest entry must carry for a canonical release."""
+    if label == "Python package" and is_fork_version(version):
+        return python_wheel_version(version)
+    return version
+
+
+def write_cargo_wheel_version(root: Path = ROOT) -> str:
+    """Rewrite root Cargo.toml to the PEP 440 wheel form; return it.
+
+    `maturin` derives the wheel version from Cargo.toml, so CI smoke builds
+    translate ONLY the ephemeral workspace copy (never committed; public
+    PyPI publish of `+inkdown.` versions is refused fail-closed). No-op for
+    non-fork versions, which are already valid PEP 440.
+    """
+    canonical = _read_section_version(root / "Cargo.toml", "package")
+    wheel = python_wheel_version(canonical) if is_fork_version(canonical) else canonical
+    if wheel != canonical:
+        _write_section_version(root / "Cargo.toml", "package", wheel)
+    return wheel
+
+
 def _node_versions(root: Path) -> dict[str, str]:
     package = json.loads((root / "napi/package.json").read_text(encoding="utf-8"))
     versions = {"Node package": package["version"]}
@@ -179,7 +253,9 @@ def check_versions(root: Path = ROOT) -> str:
     if not SEMVER.fullmatch(expected):
         raise ValueError(f"Rust crate has an invalid semantic version: {expected}")
     mismatches = {
-        label: version for label, version in versions.items() if version != expected
+        label: version
+        for label, version in versions.items()
+        if version != _want_version(label, expected)
     }
     if mismatches:
         details = "\n".join(
@@ -197,8 +273,10 @@ def set_versions(version: str, root: Path = ROOT) -> None:
     # prevents a stale manifest or generated file from leaving a partial bump.
     package_versions(root)
 
-    for _, relative, section in TOML_VERSIONS:
-        _write_section_version(root / relative, section, version)
+    for label, relative, section in TOML_VERSIONS:
+        _write_section_version(
+            root / relative, section, _want_version(label, version)
+        )
 
     package_path = root / "napi/package.json"
     package = json.loads(package_path.read_text(encoding="utf-8"))
